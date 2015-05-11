@@ -2,8 +2,12 @@
 open System.IO
 open System.Collections.Generic
 open FParsec
+open FSharpx.Collections
 
-type Puzzle = int list
+let vecNth vec idx =
+    PersistentVector.nth idx vec
+
+type Puzzle = int PersistentVector
 let puzzles = 
     let lbl = pstring "Grid" .>> spaces >>. pint32 .>> spaces
     let row = parray 9 digit |>> List.ofArray |>> List.map (int << string) 
@@ -12,7 +16,7 @@ let puzzles =
     let pfile = many1 ppuzzle .>> eof
     match runParserOnFile pfile () "..\..\sudoku.txt" System.Text.Encoding.ASCII with
     | Success(result, _, _) -> 
-        result
+        result |> List.map PersistentVector.ofSeq |> PersistentVector.ofSeq
     | Failure(errorMsg, _, _) -> 
         failwith errorMsg    
 
@@ -28,14 +32,14 @@ let rowValues (puzzle:Puzzle) (idx:int) =
     let row = idx / 9
     [0..8] |> List.map (fun col -> col + (row * 9))
     //|> ~~ ((printfn) "Idxs: %A")
-    |> List.map (List.nth puzzle) // (fun idx -> puzzle.[idx])
+    |> List.map (vecNth puzzle) // (fun idx -> puzzle.[idx])
     //|> ~~ ((printfn) "Values: %A")
     |> List.filter ((<>) 0)
 
 let colValues (puzzle:Puzzle) (idx:int) = 
     let col = idx % 9
     [0..8] |> List.map (fun row -> col + (row * 9))
-    |> List.map (List.nth puzzle)
+    |> List.map (vecNth puzzle)
     |> List.filter ((<>) 0)
 
 let subGridIdxs (idx:int) = 
@@ -60,12 +64,12 @@ let possByIdx (puzzle:Puzzle) (idx:int) =
     | x  -> [x]
 
 let isSolved : Puzzle -> bool = 
-    not << List.exists ((=) 0)
+    not << Seq.exists ((=) 0)
 
 let hasValue (a: 'a option) = if a.IsSome then true else false
 
 let firstValue (xs : IEnumerable<Option<'t>>) : Option<'t> =
-    let xs2 =  seq { for x in xs do if x.IsSome then yield x}
+    let xs2 =  Seq.cache <| seq { for x in xs do if x.IsSome then yield x}
     if Seq.isEmpty xs2 then
         None
     else
@@ -84,9 +88,8 @@ let rec fold2 combf memo goodEnoughF xs =
         else fold2 combf memo goodEnoughF xs    
 
 let rec solve (puzzle:Puzzle) : Option<Puzzle> = 
-    let unfilledIdxs = Seq.filter (List.nth puzzle >> (=) 0) [0..80]
+    let unfilledIdxs = Seq.filter (vecNth puzzle >> (=) 0) [0..80]
     let allPoss = Seq.map (fun idx -> {poss = possByIdx puzzle idx; idx = idx}) unfilledIdxs |> List.ofSeq
-
     let best = fold2 
                 (fun memo x -> if  x.poss.Length < memo.poss.Length then x else memo) 
                 noPossibilities 
@@ -97,18 +100,13 @@ let rec solve (puzzle:Puzzle) : Option<Puzzle> =
     if best.poss.Length = 0 then
         None
     else    
-        let possPuzzles = Seq.map (fun v -> 
-                                    let mutable tmp = Array.ofList puzzle
-                                    tmp.[best.idx] <- v
-                                    List.ofArray(tmp) : Puzzle)
-                                  best.poss
-
+        let possPuzzles = best.poss |> Seq.map (fun v -> PersistentVector.update best.idx v puzzle)
         match Seq.tryFind isSolved possPuzzles with
-        | None -> firstValue <| (Seq.cache <| Seq.map solve possPuzzles)
+        | None -> firstValue <| (Seq.map solve possPuzzles)
         | x -> x
 
 printfn "Parsed %d puzzles!" puzzles.Length
-for (p, i) in Seq.zip puzzles (Seq.initInfinite ((+) 1))   do
+for (p, i) in Seq.zip puzzles (Seq.initInfinite ((+) 1)) do
     printfn "Puzzle %d:" i
     puzzle2str p
     match solve p with
